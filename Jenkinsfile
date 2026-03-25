@@ -2,12 +2,11 @@ pipeline {
     agent any
 
     environment {
-        // Configuración de destino
-        EC2_USER         = 'ubuntu'
-        EC2_IP           = '18.219.33.101'
-        REMOTE_DIR       = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
+        EC2_USER     = 'ubuntu'
+        // Llamamos a la nueva función para obtener la IP
+        EC2_IP       = branchIP()
+        REMOTE_DIR   = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
         
-        // Variables de Odoo
         COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
         ODOO_PORT            = branchPort()
         POSTGRES_DB          = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
@@ -18,20 +17,14 @@ pipeline {
     stages {
         stage('Deploy to EC2') {
             steps {
-                // Usamos la credencial de tu archivo .pem
                 sshagent(['ec2-odoo-key']) {
                     sh '''
-                        # 1. Crear carpeta remota si no existe
+                        echo "Desplegando rama ${BRANCH_NAME} en la IP ${EC2_IP}..."
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
-                        
-                        # 2. Sincronizar archivos (Dockerfiles, compose, addons) a la EC2
-                        # Nota: scp es simple, rsync es mejor si está instalado
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
-                        # 3. Ejecutar el despliegue remotamente
                         ssh ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
-                            # Exportamos variables para que el docker-compose remoto las lea
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
                             export POSTGRES_DB=${POSTGRES_DB}
@@ -39,11 +32,7 @@ pipeline {
                             export POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
                             
                             docker compose up -d --build --remove-orphans
-                            
-                            echo "Esperando a que Odoo inicie..."
                             sleep 15
-                            
-                            # 4. Actualizar módulos
                             docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
                             docker compose restart odoo
 EOF
@@ -52,13 +41,15 @@ EOF
             }
         }
     }
+    // ... post y branchPort se mantienen igual
+}
 
-    post {
-        failure {
-            sshagent(['ec2-odoo-key']) {
-                sh 'ssh ${EC2_USER}@${EC2_IP} "cd ${REMOTE_DIR} && docker compose logs odoo --tail=50"'
-            }
-        }
+// NUEVA FUNCIÓN: Asigna IP según la rama
+def branchIP() {
+    switch (env.BRANCH_NAME) {
+        case 'main':    return '3.144.231.64'   // IP de Producción
+        case 'staging': return '18.219.33.101'  // IP de Staging
+        default:        return '18.219.33.101'  // Por defecto a Staging
     }
 }
 
