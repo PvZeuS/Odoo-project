@@ -25,29 +25,29 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
-                        # Ejecución de comandos remotos
+                        # Ejecución de comandos remotos usando Docker Compose V2
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
                             
-                            # Exportar variables para docker-compose
+                            # Exportar variables para docker compose
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
                             export POSTGRES_DB=${POSTGRES_DB}
                             export POSTGRES_USER=${POSTGRES_USER}
                             export POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
                             
-                            # 1. Levantar servicios (Usando el guion '-' para v1.29.2)
-                            docker-compose up -d --build --remove-orphans
+                            # 1. Levantar servicios (Comando moderno sin guion)
+                            docker compose up -d --build --remove-orphans
                             
-                            echo "Esperando a que los servicios se estabilicen..."
+                            echo "Esperando estabilidad de los servicios..."
                             sleep 15
                             
-                            # 2. ACTUALIZACIÓN DE DB (Usamos 'run --rm' para evitar conflicto de puertos)
-                            # Esto crea un contenedor temporal que actualiza y se destruye al terminar.
-                            docker-compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
+                            # 2. ACTUALIZACIÓN DE DB
+                            # Usamos 'run --rm' para evitar conflictos de puerto 8069
+                            docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
                             
-                            # 3. Reiniciar el contenedor principal para aplicar cambios
-                            docker-compose restart odoo
+                            # 3. Reiniciar el servicio principal para aplicar cambios
+                            docker compose restart odoo
 EOF
                     '''
                 }
@@ -57,10 +57,10 @@ EOF
 
     post {
         success {
-            echo "Despliegue exitoso en http://${EC2_IP}:${ODOO_PORT}"
+            echo "¡Despliegue Exitoso! Disponible en: http://${EC2_IP}:${ODOO_PORT}"
         }
         failure {
-            echo "El despliegue ha fallado. Revisa los logs de Jenkins."
+            echo "El despliegue ha fallado. Revisa los logs de la consola de Jenkins."
         }
     }
 }
