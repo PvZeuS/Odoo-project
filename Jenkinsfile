@@ -3,7 +3,6 @@ pipeline {
 
     environment {
         EC2_USER     = 'ubuntu'
-        // Llamamos a la nueva función para obtener la IP
         EC2_IP       = branchIP()
         REMOTE_DIR   = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
         
@@ -23,7 +22,7 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
-                        ssh ${EC2_USER}@${EC2_IP} << EOF
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
@@ -31,25 +30,29 @@ pipeline {
                             export POSTGRES_USER=${POSTGRES_USER}
                             export POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
                             
-                            docker compose up -d --build --remove-orphans
+                            # Uso de docker-compose con guion para compatibilidad v1.29.2
+                            docker-compose up -d --build --remove-orphans
+                            
+                            echo "Esperando a que la DB esté lista..."
                             sleep 15
-                            docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
-                            docker compose restart odoo
+                            
+                            # Inicialización/Actualización de base de datos
+                            docker-compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
+                            
+                            docker-compose restart odoo
 EOF
                     '''
                 }
             }
         }
     }
-    // ... post y branchPort se mantienen igual
 }
 
-// NUEVA FUNCIÓN: Asigna IP según la rama
 def branchIP() {
     switch (env.BRANCH_NAME) {
-        case 'main':    return '3.144.231.64'   // IP de Producción
-        case 'staging': return '18.219.33.101'  // IP de Staging
-        default:        return '18.219.33.101'  // Por defecto a Staging
+        case 'main':    return '3.144.231.64'
+        case 'staging': return '18.219.33.101'
+        default:        return '18.219.33.101'
     }
 }
 
