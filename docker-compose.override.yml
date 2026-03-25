@@ -1,0 +1,7 @@
+services:
+  odoo:
+    volumes:
+      - ./addons:/mnt/extra-addons
+  db:
+    ports:
+      - "5432:5432"
