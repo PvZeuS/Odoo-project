@@ -96,27 +96,35 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                                 cd ${REMOTE_DIR}
                                 
-                                # Ajuste de config y variables de entorno
+                                # 1. Configuración de variables
                                 sed -i "s/^db_password =.*/db_password = \$DB_PASS/" ./config/odoo.conf
                                 export POSTGRES_PASSWORD=\$DB_PASS
                                 export ODOO_PORT=${ODOO_PORT}
                                 export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                                 
-                                echo "--- Levantando servicios en EC2 ---"
+                                echo "--- Reiniciando servicios en EC2 ---"
                                 docker compose down --remove-orphans
+                                # Limpiar volúmenes de test si es necesario para liberar espacio (opcional)
+                                docker system prune -f 
+                                
                                 docker compose up -d
                                 
-                                sleep 15
+                                echo "Esperando a que los servicios se estabilicen (30s)..."
+                                sleep 30
                                 
-                                # Verificación de salud del contenedor
-                                STATUS=\$(docker inspect -f '{{.State.Status}}' \$(docker compose ps -q odoo))
+                                # 2. Verificación de salud mejorada
+                                CONTAINER_ID=\$(docker compose ps -q odoo)
+                                STATUS=\$(docker inspect -f '{{.State.Status}}' \$CONTAINER_ID)
+                                
                                 if [ "\$STATUS" != "running" ]; then
-                                    echo "ERROR: Odoo entró en estado \$STATUS. Logs de error:"
-                                    docker compose logs --tail=50 odoo
+                                    echo "CRÍTICO: El contenedor de Odoo está en estado: \$STATUS"
+                                    echo "--- ÚLTIMOS LOGS DE ODOO ---"
+                                    docker compose logs --tail=100 odoo
                                     exit 1
                                 fi
 
                                 echo "--- Ejecutando actualización de base de datos ---"
+                                # Intentamos la actualización con un pequeño delay extra
                                 docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
                         """
