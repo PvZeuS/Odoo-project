@@ -15,10 +15,12 @@ pipeline {
     stages {
         stage('Linting') {
             steps {
+                echo "--- REVISANDO ESTRUCTURA ---"
+                sh 'ls -R' // Esto nos dirá exactamente dónde está la carpeta addons
+                
                 echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
-                // Usamos 'find' para buscar todos los .py y compilarlos uno por uno
                 sh '''
-                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find /mnt/addons -name '*.py' -exec python3 -m py_compile {} +"
+                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find . -name '*.py' -exec python3 -m py_compile {} +"
                 '''
             }
         }
