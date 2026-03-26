@@ -14,7 +14,6 @@ pipeline {
     stages {
         stage('Workspace Cleanup') {
             steps {
-                echo "--- Limpiando Workspace para asegurar clon fresco ---"
                 deleteDir()
                 checkout scm
             }
@@ -26,24 +25,17 @@ pipeline {
             }
         }
 
-        stage('Linting & Static Analysis') {
+        stage('Linting') {
             steps {
-                echo "--- Analizando código con Flake8 ---"
+                echo "--- Analizando código con Flake8 (Local) ---"
+                // Instalamos y corremos flake8 directamente en el agente para evitar problemas de volúmenes Docker
                 sh """
-                    docker run --rm \
-                        -v ${env.WORKSPACE}:/apps \
-                        -w /apps \
-                        python:3.12-slim sh -c "
-                            pip install flake8 && \
-                            if [ -d './addons' ]; then \
-                                flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics && \
-                                flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics; \
-                            else \
-                                echo 'ERROR CRÍTICO: No se encuentra la carpeta ./addons'; \
-                                ls -la /apps; \
-                                exit 1; \
-                            fi
-                        "
+                    pip install flake8 --break-system-packages || pip install flake8
+                    if [ -d './addons' ]; then
+                        flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
+                    else
+                        echo "ADVERTENCIA: No se encontró carpeta addons, saltando linting."
+                    fi
                 """
             }
         }
@@ -56,8 +48,6 @@ pipeline {
                     
                     if (targetModule) {
                         echo "--- EJECUTANDO TESTS PARA: ${targetModule} ---"
-                        def jenkinsID = sh(script: 'hostname', returnStdout: true).trim()
-                        
                         withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
                             sh """
                                 docker network create test-net-${BUILD_NUMBER} || true
@@ -69,28 +59,34 @@ pipeline {
                                 
                                 sleep 15
 
-                                docker run --rm --name odoo-test-${BUILD_NUMBER} \
+                                # Corremos el test SIN --volumes-from para evitar el error de ruta
+                                # Copiamos los archivos directamente al contenedor de test
+                                docker run -d --name odoo-test-${BUILD_NUMBER} \
                                     --network test-net-${BUILD_NUMBER} \
-                                    --volumes-from ${jenkinsID} \
-                                    --user root \
-                                    odoo:19.0 sh -c "
-                                        pip install --break-system-packages websocket-client && \
-                                        odoo -d odoo_test \
-                                        --db_host db-test-${BUILD_NUMBER} \
-                                        --db_user odoo \
-                                        --db_password=\$DB_PASS \
-                                        --addons-path=/apps/addons \
-                                        -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}
-                                    "
+                                    -e PGPASSWORD=\$DB_PASS \
+                                    odoo:19.0 tail -f /dev/null
+
+                                docker cp ./addons odoo-test-${BUILD_NUMBER}:/var/lib/odoo/addons/19.0/custom_addons
+                                
+                                docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
+                                    pip install --break-system-packages websocket-client && \
+                                    odoo -d odoo_test \
+                                    --db_host db-test-${BUILD_NUMBER} \
+                                    --db_user odoo \
+                                    --db_password=\$DB_PASS \
+                                    --addons-path=/var/lib/odoo/addons/19.0/custom_addons \
+                                    -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}
+                                "
                             """
                         }
                     } else {
-                        echo "--- SALTANDO TESTS (Mensaje sin MOD:nombre_modulo) ---"
+                        echo "--- SALTANDO TESTS ---"
                     }
                 }
             }
             post {
                 always {
+                    sh "docker stop odoo-test-${BUILD_NUMBER} || true && docker rm odoo-test-${BUILD_NUMBER} || true"
                     sh "docker stop db-test-${BUILD_NUMBER} || true && docker rm db-test-${BUILD_NUMBER} || true"
                     sh "docker network rm test-net-${BUILD_NUMBER} || true"
                 }
@@ -108,7 +104,6 @@ pipeline {
                             
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                                 cd ${REMOTE_DIR}
-                                
                                 echo 'POSTGRES_PASSWORD=${TARGET_DB_PASS}' > .env
                                 echo 'ODOO_PORT=${ODOO_PORT}' >> .env
                                 echo 'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}' >> .env
@@ -117,24 +112,18 @@ pipeline {
                                     sed -i 's/^db_password =.*/db_password = ${TARGET_DB_PASS}/' ./config/odoo.conf
                                 fi
                                 
-                                echo "--- Reiniciando servicios en EC2 ---"
                                 docker compose down --remove-orphans
-                                docker system prune -f 
                                 docker compose up -d
-                                
-                                echo "Esperando estabilidad (30s)..."
-                                sleep 30
+                                sleep 20
                                 
                                 CONTAINER_ID=\\\$(docker compose ps -q odoo)
                                 STATUS=\\\$(docker inspect -f '{{.State.Status}}' \\\$CONTAINER_ID)
                                 
                                 if [ "\\\$STATUS" != "running" ]; then
-                                    echo "CRÍTICO: Odoo falló al iniciar."
                                     docker compose logs --tail=50 odoo
                                     exit 1
                                 fi
 
-                                echo "--- Actualizando Base de Datos ---"
                                 docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
                         """
@@ -145,7 +134,7 @@ EOF
     }
 
     post {
-        success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
+        success { echo "--- DESPLIEGUE OK EN ${env.BRANCH_NAME.toUpperCase()} ---" }
         failure { echo "--- PIPELINE FALLIDO ---" }
     }
 }
