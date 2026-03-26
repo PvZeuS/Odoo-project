@@ -19,6 +19,22 @@ pipeline {
             }
         }
 
+        stage('Linting & Static Analysis') {
+            steps {
+                sh """
+                    echo "--- Instalando herramientas de calidad de código ---"
+                    pip install --break-system-packages flake8
+                    
+                    echo "--- Analizando código Python en /addons ---"
+                    # Detiene el build si hay errores de sintaxis o variables no definidas
+                    flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
+                    
+                    # Reporte informativo de estilo (no detiene el build)
+                    flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                """
+            }
+        }
+
         stage('Smart Unit Tests') {
             steps {
                 script {
@@ -59,6 +75,8 @@ pipeline {
                               --test-tags /${targetModule}
                           "
                         """
+                    } else {
+                        echo "--- SALTANDO TESTS: No se detectó el patrón MOD:en el commit ---"
                     }
                 }
             }
@@ -81,7 +99,7 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                             cd ${REMOTE_DIR}
                             
-                            # Ajustar dinámicamente el odoo.conf para que use la clave y DB correcta
+                            # Ajustar odoo.conf dinámicamente
                             sed -i "s/^db_password =.*/db_password = ${DB_PASS_SECRET}/" ./config/odoo.conf
                             sed -i "s/^db_name =.*/db_name = ${POSTGRES_DB}/" ./config/odoo.conf
 
@@ -95,7 +113,7 @@ pipeline {
                             docker compose down --remove-orphans
                             docker compose up -d
                             
-                            echo "--- Actualizando base de datos ---"
+                            echo "--- Actualizando módulos y base de datos ---"
                             sleep 10
                             docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
                             
@@ -108,8 +126,8 @@ EOF
     }
 
     post {
-        success { echo "--- DESPLIEGUE EXITOSO: http://${EC2_IP}:${ODOO_PORT} ---" }
-        failure { echo "--- DESPLIEGUE FALLIDO ---" }
+        success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- PIPELINE FALLIDO: Revisa los logs de Linting o Tests ---" }
     }
 }
 
