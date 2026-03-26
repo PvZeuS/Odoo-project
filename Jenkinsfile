@@ -12,6 +12,14 @@ pipeline {
     }
 
     stages {
+        stage('Workspace Cleanup') {
+            steps {
+                echo "--- Limpiando Workspace para asegurar clon fresco ---"
+                deleteDir()
+                checkout scm
+            }
+        }
+
         stage('Disk Maintenance') {
             steps {
                 sh 'docker system prune -f --volumes'
@@ -31,8 +39,8 @@ pipeline {
                                 flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics && \
                                 flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics; \
                             else \
-                                echo 'ERROR: No se encuentra la carpeta ./addons en el workspace'; \
-                                ls -R /apps; \
+                                echo 'ERROR CRÍTICO: No se encuentra la carpeta ./addons'; \
+                                ls -la /apps; \
                                 exit 1; \
                             fi
                         "
@@ -77,7 +85,7 @@ pipeline {
                             """
                         }
                     } else {
-                        echo "--- SALTANDO TESTS (Mensaje de commit no contiene MOD:nombre_modulo) ---"
+                        echo "--- SALTANDO TESTS (Mensaje sin MOD:nombre_modulo) ---"
                     }
                 }
             }
@@ -101,12 +109,10 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                                 cd ${REMOTE_DIR}
                                 
-                                # 1. Forzar variables en archivo .env
                                 echo 'POSTGRES_PASSWORD=${TARGET_DB_PASS}' > .env
                                 echo 'ODOO_PORT=${ODOO_PORT}' >> .env
                                 echo 'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}' >> .env
                                 
-                                # 2. Configurar odoo.conf
                                 if [ -f "./config/odoo.conf" ]; then
                                     sed -i 's/^db_password =.*/db_password = ${TARGET_DB_PASS}/' ./config/odoo.conf
                                 fi
@@ -119,7 +125,6 @@ pipeline {
                                 echo "Esperando estabilidad (30s)..."
                                 sleep 30
                                 
-                                # 3. Validación de estado
                                 CONTAINER_ID=\\\$(docker compose ps -q odoo)
                                 STATUS=\\\$(docker inspect -f '{{.State.Status}}' \\\$CONTAINER_ID)
                                 
