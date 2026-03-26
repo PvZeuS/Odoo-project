@@ -24,7 +24,6 @@ pipeline {
                 script {
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
                     def targetModule = getTargetModule(commitMsg)
-                    def workspacePath = sh(script: 'pwd', returnStdout: true).trim()
                     
                     if (targetModule) {
                         echo "--- EJECUTANDO TESTS PARA: ${targetModule} ---"
@@ -36,7 +35,7 @@ pipeline {
                                 -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' \
                                 -e POSTGRES_USER=odoo \
                                 -e POSTGRES_DB=postgres \
-                                postgres:15-alpine
+                                postgres:16-alpine
                         """
                         
                         sleep 15
@@ -44,7 +43,7 @@ pipeline {
                         sh """
                           docker run --rm --name odoo-test-${BUILD_NUMBER} \
                           --network test-net-${BUILD_NUMBER} \
-                          -v ${workspacePath}/addons:/mnt/extra-addons \
+                          -v ${env.WORKSPACE}/addons:/mnt/extra-addons \
                           --user root \
                           odoo:19.0 sh -c "
                               pip install --break-system-packages websocket-client && \
@@ -60,18 +59,13 @@ pipeline {
                               --test-tags /${targetModule}
                           "
                         """
-                    } else {
-                        echo "--- SALTANDO TESTS: Sin patrón MOD: ---"
                     }
                 }
             }
             post {
                 always {
-                    sh """
-                        docker stop db-test-${BUILD_NUMBER} || true
-                        docker rm db-test-${BUILD_NUMBER} || true
-                        docker network rm test-net-${BUILD_NUMBER} || true
-                    """
+                    sh "docker stop db-test-${BUILD_NUMBER} || true && docker rm db-test-${BUILD_NUMBER} || true"
+                    sh "docker network rm test-net-${BUILD_NUMBER} || true"
                 }
             }
         }
@@ -80,23 +74,32 @@ pipeline {
             steps {
                 sshagent(['ec2-odoo-key']) { 
                     sh """
-                        echo "Conectando a ${EC2_IP} para desplegar rama ${env.BRANCH_NAME}..."
-                        
+                        echo "Preparando despliegue en ${EC2_IP}..."
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                             cd ${REMOTE_DIR}
                             
+                            # Ajustar dinámicamente el odoo.conf para que use la clave y DB correcta
+                            sed -i "s/^db_password =.*/db_password = ${DB_PASS_SECRET}/" ./config/odoo.conf
+                            sed -i "s/^db_name =.*/db_name = ${POSTGRES_DB}/" ./config/odoo.conf
+
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
                             export POSTGRES_DB=${POSTGRES_DB}
                             export POSTGRES_USER=${POSTGRES_USER}
                             export POSTGRES_PASSWORD='${DB_PASS_SECRET}'
                             
+                            echo "--- Levantando servicios ---"
                             docker compose down --remove-orphans
-                            docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
                             docker compose up -d
+                            
+                            echo "--- Actualizando base de datos ---"
+                            sleep 10
+                            docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
+                            
+                            docker compose ps
 EOF
                     """
                 }
@@ -105,8 +108,8 @@ EOF
     }
 
     post {
-        success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
-        failure { echo "--- PIPELINE FALLIDO ---" }
+        success { echo "--- DESPLIEGUE EXITOSO: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- DESPLIEGUE FALLIDO ---" }
     }
 }
 
@@ -115,8 +118,6 @@ def getTargetModule(String msg) {
     def match = (msg =~ /MOD:([a-zA-Z0-9_]+)/)
     return match ? match[0][1] : null
 }
-
-
 
 def branchIP() { 
     return (env.BRANCH_NAME == 'main') ? '3.144.231.64' : '18.219.33.101' 
