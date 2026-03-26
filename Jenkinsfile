@@ -6,7 +6,7 @@ pipeline {
         EC2_IP         = branchIP()
         REMOTE_DIR     = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
         BACKUP_DIR     = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}_old"
-        POSTGRES_DB    = "postgres" // O tu base de datos específica
+        POSTGRES_DB    = "postgres" 
         ODOO_PORT      = branchPort()
         COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
         DB_PASS_CRED   = credentials('odoo-db-password')
@@ -35,18 +35,43 @@ pipeline {
                     def targetModule = getTargetModule(commitMsg)
                     
                     if (targetModule) {
-                        echo "--- TEST: ${targetModule} ---"
+                        echo "--- EJECUTANDO TESTS DE LÓGICA PARA: ${targetModule} ---"
                         withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
                             sh """
                                 docker network create test-net-${BUILD_NUMBER} || true
-                                docker run -d --name db-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} -e POSTGRES_PASSWORD=\$DB_PASS -e POSTGRES_USER=odoo -e POSTGRES_DB=postgres postgres:16-alpine
+                                
+                                # Levantar DB temporal
+                                docker run -d --name db-test-${BUILD_NUMBER} \
+                                    --network test-net-${BUILD_NUMBER} \
+                                    -e POSTGRES_PASSWORD=\$DB_PASS -e POSTGRES_USER=odoo -e POSTGRES_DB=postgres \
+                                    postgres:16-alpine
+                                
                                 sleep 15
-                                docker run -d --name odoo-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} -e PGPASSWORD=\$DB_PASS odoo:19.0 tail -f /dev/null
+
+                                # Levantar Odoo temporal
+                                docker run -d --name odoo-test-${BUILD_NUMBER} \
+                                    --network test-net-${BUILD_NUMBER} \
+                                    -e PGPASSWORD=\$DB_PASS \
+                                    odoo:19.0 tail -f /dev/null
+
+                                # Inyectar Addons
                                 docker exec -u root odoo-test-${BUILD_NUMBER} mkdir -p /mnt/extra-addons
                                 docker cp ./addons/. odoo-test-${BUILD_NUMBER}:/mnt/extra-addons/
-                                docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "pip install --break-system-packages websocket-client && odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password=\$DB_PASS --addons-path=/mnt/extra-addons -i ${targetModule} --test-enable --stop-after-init --log-level=test"
+                                
+                                # Ejecutar Tests (FILTRANDO CHROME con --test-tags=at_install)
+                                docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
+                                    pip install --break-system-packages websocket-client && \
+                                    odoo -d odoo_test \
+                                    --db_host db-test-${BUILD_NUMBER} \
+                                    --db_user odoo \
+                                    --db_password=\\\$DB_PASS \
+                                    --addons-path=/mnt/extra-addons \
+                                    -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags=at_install
+                                "
                             """
                         }
+                    } else {
+                        echo "--- SALTANDO TESTS: No se detectó MOD:nombre_modulo en el commit ---"
                     }
                 }
             }
@@ -67,7 +92,7 @@ pipeline {
                             echo "--- Preparando Snapshot y Backup en ${EC2_IP} ---"
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                                 # 1. Crear snapshot SQL si el contenedor existe
-                                if [ \\\$(docker ps -q -f name=${COMPOSE_PROJECT_NAME}-db-1) ]; then
+                                if [ \$(docker ps -q -f name=${COMPOSE_PROJECT_NAME}-db-1) ]; then
                                     echo "Snapshotting DB..."
                                     docker exec ${COMPOSE_PROJECT_NAME}-db-1 pg_dump -U odoo -d postgres > /home/ubuntu/last_db_snapshot_${env.BRANCH_NAME}.sql
                                 fi
@@ -88,11 +113,13 @@ EOF
                                 echo 'POSTGRES_PASSWORD=${TARGET_DB_PASS}' > .env
                                 echo 'ODOO_PORT=${ODOO_PORT}' >> .env
                                 echo 'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}' >> .env
+                                
                                 docker compose down --remove-orphans
                                 docker compose up -d
-                                sleep 10
-                                # Actualizar módulos
-                                docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d postgres -u all --stop-after-init --no-http
+                                sleep 15
+                                
+                                # Actualizar módulos en la DB de producción
+                                docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
                         """
                     }
@@ -104,7 +131,6 @@ EOF
     post {
         success {
             script {
-                // Etiquetado automático en Git
                 def tagName = "deploy-${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
                 sh "git tag ${tagName} && git push origin ${tagName}"
                 echo "--- DESPLIEGUE OK Y TAG ${tagName} CREADO ---"
