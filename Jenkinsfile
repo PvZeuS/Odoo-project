@@ -16,9 +16,9 @@ pipeline {
         stage('Linting') {
             steps {
                 echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
-                // El 'ls -R' nos confirmó que 'addons' está en la raíz, así que esto pasará volando
+                // Montamos el actual en /src y buscamos desde ahí sin rutas absolutas del sistema
                 sh '''
-                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find /mnt/addons -name '*.py' -exec python3 -m py_compile {} +"
+                    docker run --rm -v $(pwd):/src -w /src python:3.10-slim sh -c "find addons -name '*.py' -exec python3 -m py_compile {} +"
                 '''
             }
         }
