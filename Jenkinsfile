@@ -9,7 +9,7 @@ pipeline {
         ODOO_PORT      = branchPort()
         POSTGRES_DB    = "db_${env.BRANCH_NAME}"
         POSTGRES_USER  = 'odoo'
-        // Definimos la credencial aquí, pero la inyectaremos de forma segura en los scripts
+        // Credencial inyectada de forma segura
         DB_PASS_CRED   = credentials('odoo-db-password')
     }
 
@@ -24,7 +24,7 @@ pipeline {
             steps {
                 echo "--- Analizando código con Flake8 ---"
                 sh """
-                    docker run --rm -v \$(pwd):/apps -w /apps python:3.12-slim sh -c "
+                    docker run --rm -v ${env.WORKSPACE}:/apps -w /apps python:3.12-slim sh -c "
                         pip install flake8 && \
                         flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
                     "
@@ -39,7 +39,7 @@ pipeline {
                     def targetModule = getTargetModule(commitMsg)
                     
                     if (targetModule) {
-                        // Pasamos la contraseña como variable de entorno del shell, NO interpolada en el string de Groovy
+                        // Usamos withEnv para evitar interpolación insegura en Groovy
                         withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
                             sh """
                                 docker network create test-net-${BUILD_NUMBER} || true
@@ -51,11 +51,12 @@ pipeline {
                                     -e POSTGRES_DB=postgres \
                                     postgres:16-alpine
                                 
-                                sleep 10
+                                sleep 15
 
+                                # Usamos la ruta del WORKSPACE de Jenkins para el volumen en DooD
                                 docker run --rm --name odoo-test-${BUILD_NUMBER} \
                                     --network test-net-${BUILD_NUMBER} \
-                                    -v \$(pwd)/addons:/mnt/extra-addons \
+                                    -v ${env.WORKSPACE}/addons:/mnt/extra-addons \
                                     --user root \
                                     odoo:19.0 sh -c "
                                         pip install --break-system-packages websocket-client && \
@@ -63,12 +64,14 @@ pipeline {
                                         --db_host db-test-${BUILD_NUMBER} \
                                         --db_user odoo \
                                         --db_password=\$DB_PASS \
-                                        --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
+                                        --addons-path=/mnt/extra-addons \
                                         -i ${targetModule} \
                                         --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}
                                     "
                             """
                         }
+                    } else {
+                        echo "No se detectó módulo para testear (Formato MOD:nombre_modulo)"
                     }
                 }
             }
@@ -90,12 +93,25 @@ pipeline {
                             
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                                 cd ${REMOTE_DIR}
+                                # Inyectar pass en config sin romper el archivo
                                 sed -i "s/^db_password =.*/db_password = \$DB_PASS/" ./config/odoo.conf
                                 
                                 export POSTGRES_PASSWORD=\$DB_PASS
                                 docker compose down --remove-orphans
                                 docker compose up -d
-                                sleep 5
+
+                                # ESPERA PROFESIONAL: Verificar que el contenedor esté 'running' y no 'restarting'
+                                echo "Verificando salud del contenedor..."
+                                for i in {1..15}; do
+                                    STATUS=\$(docker inspect -f '{{.State.Status}}' \$(docker compose ps -q odoo) 2>/dev/null)
+                                    if [ "\$STATUS" == "running" ]; then
+                                        echo "Odoo está UP"
+                                        break
+                                    fi
+                                    echo "Esperando a Odoo... (Status: \$STATUS)"
+                                    sleep 4
+                                done
+                                
                                 docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
                         """
