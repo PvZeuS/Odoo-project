@@ -16,8 +16,10 @@ pipeline {
         stage('Linting') {
             steps {
                 echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
-                // Usamos python oficial para validar sintaxis rápidamente sin depender de vauxoo
-                sh 'docker run --rm -v $(pwd):/mnt python:3.10-slim python3 -m py_compile /mnt/addons/*/*.py'
+                // Usamos 'find' para buscar todos los .py y compilarlos uno por uno
+                sh '''
+                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find /mnt/addons -name '*.py' -exec python3 -m py_compile {} +"
+                '''
             }
         }
 
