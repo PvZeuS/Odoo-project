@@ -59,22 +59,24 @@ pipeline {
                                 
                                 sleep 15
 
-                                # Corremos el test SIN --volumes-from para evitar el error de ruta
-                                # Copiamos los archivos directamente al contenedor de test
+                                # 1. Creamos el contenedor
                                 docker run -d --name odoo-test-${BUILD_NUMBER} \
                                     --network test-net-${BUILD_NUMBER} \
                                     -e PGPASSWORD=\$DB_PASS \
                                     odoo:19.0 tail -f /dev/null
 
-                                docker cp ./addons odoo-test-${BUILD_NUMBER}:/var/lib/odoo/addons/19.0/custom_addons
+                                # 2. Inyectamos los addons en una ruta que SIEMPRE existe
+                                docker exec -u root odoo-test-${BUILD_NUMBER} mkdir -p /mnt/extra-addons
+                                docker cp ./addons/. odoo-test-${BUILD_NUMBER}:/mnt/extra-addons/
                                 
+                                # 3. Ejecutamos el test
                                 docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
                                     pip install --break-system-packages websocket-client && \
                                     odoo -d odoo_test \
                                     --db_host db-test-${BUILD_NUMBER} \
                                     --db_user odoo \
                                     --db_password=\$DB_PASS \
-                                    --addons-path=/var/lib/odoo/addons/19.0/custom_addons \
+                                    --addons-path=/mnt/extra-addons \
                                     -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}
                                 "
                             """
