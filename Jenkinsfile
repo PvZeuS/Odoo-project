@@ -15,12 +15,10 @@ pipeline {
     stages {
         stage('Linting') {
             steps {
-                echo "--- REVISANDO ESTRUCTURA ---"
-                sh 'ls -R' // Esto nos dirá exactamente dónde está la carpeta addons
-                
                 echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
+                // El 'ls -R' nos confirmó que 'addons' está en la raíz, así que esto pasará volando
                 sh '''
-                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find . -name '*.py' -exec python3 -m py_compile {} +"
+                    docker run --rm -v $(pwd):/mnt python:3.10-slim sh -c "find /mnt/addons -name '*.py' -exec python3 -m py_compile {} +"
                 '''
             }
         }
@@ -29,10 +27,10 @@ pipeline {
             steps {
                 script {
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
-                    def match = (commitMsg =~ /MOD:([a-zA-Z0-9_]+)/)
+                    // Llamamos a nuestra nueva función segura
+                    def targetModule = getTargetModule(commitMsg)
                     
-                    if (match) {
-                        def targetModule = match[0][1]
+                    if (targetModule) {
                         echo "--- EJECUTANDO TESTS PARA EL MÓDULO: ${targetModule} ---"
                         
                         sh """
@@ -44,7 +42,7 @@ pipeline {
                                 -e POSTGRES_USER=odoo \
                                 postgres:15-alpine
                             
-                            sleep 15
+                            sleep 20
                             
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
@@ -98,13 +96,16 @@ EOF
     }
 
     post {
-        success {
-            echo "--- ¡TODO OK! ---"
-        }
-        failure {
-            echo "--- EL PIPELINE FALLÓ ---"
-        }
+        success { echo "--- ¡TODO OK! Acceso: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- EL PIPELINE FALLÓ ---" }
     }
+}
+
+// ESTA ES LA FUNCIÓN CLAVE PARA EVITAR EL ERROR DE SERIALIZACIÓN
+@NonCPS
+def getTargetModule(String msg) {
+    def match = (msg =~ /MOD:([a-zA-Z0-9_]+)/)
+    return match ? match[0][1] : null
 }
 
 def branchIP() {
