@@ -8,7 +8,6 @@ pipeline {
         POSTGRES_DB    = "db_${env.BRANCH_NAME}"
         ODOO_PORT      = branchPort()
         COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME}"
-        // Credencial definida una sola vez para evitar duplicados
         DB_PASS_CRED   = credentials('odoo-db-password')
     }
 
@@ -72,7 +71,7 @@ pipeline {
                             """
                         }
                     } else {
-                        echo "--- SALTANDO TESTS: No se detectó MOD: en el commit ---"
+                        echo "--- SALTANDO TESTS ---"
                     }
                 }
             }
@@ -87,7 +86,8 @@ pipeline {
         stage('Deploy to EC2') {
             steps {
                 sshagent(['ec2-odoo-key']) { 
-                    withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
+                    // Usamos una variable intermedia para asegurar el paso al shell
+                    withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
                         sh """
                             echo "Preparando despliegue en ${EC2_IP}..."
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
@@ -96,36 +96,36 @@ pipeline {
                             ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
                                 cd ${REMOTE_DIR}
                                 
-                                # 1. Configuración de variables
-                                sed -i "s/^db_password =.*/db_password = \$DB_PASS/" ./config/odoo.conf
-                                export POSTGRES_PASSWORD=\$DB_PASS
-                                export ODOO_PORT=${ODOO_PORT}
-                                export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+                                # 1. Forzar variables en archivo .env para Docker Compose
+                                echo "POSTGRES_PASSWORD=${TARGET_DB_PASS}" > .env
+                                echo "ODOO_PORT=${ODOO_PORT}" >> .env
+                                echo "COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}" >> .env
+                                
+                                # 2. Configurar odoo.conf físicamente
+                                sed -i "s/^db_password =.*/db_password = ${TARGET_DB_PASS}/" ./config/odoo.conf
                                 
                                 echo "--- Reiniciando servicios en EC2 ---"
                                 docker compose down --remove-orphans
-                                # Limpiar volúmenes de test si es necesario para liberar espacio (opcional)
                                 docker system prune -f 
                                 
                                 docker compose up -d
                                 
-                                echo "Esperando a que los servicios se estabilicen (30s)..."
+                                echo "Esperando estabilidad (30s)..."
                                 sleep 30
                                 
-                                # 2. Verificación de salud mejorada
+                                # 3. Validación de estado
                                 CONTAINER_ID=\$(docker compose ps -q odoo)
                                 STATUS=\$(docker inspect -f '{{.State.Status}}' \$CONTAINER_ID)
                                 
                                 if [ "\$STATUS" != "running" ]; then
-                                    echo "CRÍTICO: El contenedor de Odoo está en estado: \$STATUS"
-                                    echo "--- ÚLTIMOS LOGS DE ODOO ---"
-                                    docker compose logs --tail=100 odoo
+                                    echo "CRÍTICO: Odoo falló. Logs:"
+                                    docker compose logs --tail=50 odoo
                                     exit 1
                                 fi
 
-                                echo "--- Ejecutando actualización de base de datos ---"
-                                # Intentamos la actualización con un pequeño delay extra
-                                docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
+                                echo "--- Actualizando DB ---"
+                                # Usamos -e para inyectar la clave directamente al comando exec
+                                docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
                         """
                     }
@@ -136,11 +136,9 @@ EOF
 
     post {
         success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
-        failure { echo "--- PIPELINE FALLIDO: Revisa los logs de Jenkins ---" }
+        failure { echo "--- PIPELINE FALLIDO ---" }
     }
 }
-
-// --- FUNCIONES DE SOPORTE ---
 
 @NonCPS
 def getTargetModule(String msg) {
