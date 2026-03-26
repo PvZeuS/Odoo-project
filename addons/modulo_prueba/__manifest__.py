@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización staging pruebas',
+    'name': 'Módulo de Prueba Automatización staging error',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
