@@ -21,16 +21,16 @@ pipeline {
 
         stage('Linting & Static Analysis') {
             steps {
+                echo "--- Analizando código con Flake8 (vía Docker) ---"
                 sh """
-                    echo "--- Instalando herramientas de calidad de código ---"
-                    pip install --break-system-packages flake8
-                    
-                    echo "--- Analizando código Python en /addons ---"
-                    # Detiene el build si hay errores de sintaxis o variables no definidas
-                    flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
-                    
-                    # Reporte informativo de estilo (no detiene el build)
-                    flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                    docker run --rm \
+                        -v ${env.WORKSPACE}:/apps \
+                        -w /apps \
+                        python:3.12-slim sh -c "
+                            pip install flake8 && \
+                            flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics && \
+                            flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                        "
                 """
             }
         }
