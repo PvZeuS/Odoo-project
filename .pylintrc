@@ -1,0 +1,6 @@
+[MASTER]
+load-plugins=pylint_odoo
+
+[MESSAGES CONTROL]
+disable=all
+enable=odoo-lint,fatal,error,warning
