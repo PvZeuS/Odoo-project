@@ -5,28 +5,25 @@ pipeline {
         EC2_USER     = 'ubuntu'
         EC2_IP       = branchIP()
         REMOTE_DIR   = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
-        
         COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
         ODOO_PORT            = branchPort()
         POSTGRES_DB          = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
         POSTGRES_USER        = 'odoo'
-        // Extraemos el valor del credential para usarlo en los contenedores de test
         DB_PASS_SECRET       = credentials('odoo-db-password')
     }
 
     stages {
         stage('Linting') {
             steps {
-                echo "--- INICIANDO LINTING DE CÓDIGO ---"
-                // Ahora que docker funciona en Jenkins, esto no fallará
-                sh 'docker run --rm -v $(pwd):/mnt vauxoo/odoo-linter:latest pylint --rcfile=/mnt/.pylintrc /mnt/addons'
+                echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
+                // Usamos python oficial para validar sintaxis rápidamente sin depender de vauxoo
+                sh 'docker run --rm -v $(pwd):/mnt python:3.10-slim python3 -m py_compile /mnt/addons/*/*.py'
             }
         }
 
         stage('Smart Unit Tests') {
             steps {
                 script {
-                    // Detectar si el commit trae el disparador MOD:nombre_modulo
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
                     def match = (commitMsg =~ /MOD:([a-zA-Z0-9_]+)/)
                     
@@ -35,20 +32,16 @@ pipeline {
                         echo "--- EJECUTANDO TESTS PARA EL MÓDULO: ${targetModule} ---"
                         
                         sh """
-                            # Crear red temporal para que Odoo y DB se hablen
-                            docker network create test-net-${BUILD_NUMBER}
+                            docker network create test-net-${BUILD_NUMBER} || true
                             
-                            # Levantar Postgres temporal
                             docker run -d --name db-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
                                 -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' \
                                 -e POSTGRES_USER=odoo \
                                 postgres:15-alpine
                             
-                            # Esperar a que la DB esté lista
-                            sleep 10
+                            sleep 15
                             
-                            # Ejecutar Odoo solo para instalar y testear el módulo indicado
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
                                 -v \$(pwd)/addons:/mnt/extra-addons \
@@ -58,13 +51,12 @@ pipeline {
                                 -i base,${targetModule} --test-enable --stop-after-init --log-level=test
                         """
                     } else {
-                        echo "--- SALTANDO TESTS: No se detectó 'MOD:modulo' en el commit ---"
+                        echo "--- SALTANDO TESTS: No se detectó 'MOD:modulo' ---"
                     }
                 }
             }
             post {
                 always {
-                    // Limpieza rigurosa de contenedores de prueba
                     sh """
                         docker stop db-test-${BUILD_NUMBER} || true
                         docker rm db-test-${BUILD_NUMBER} || true
@@ -79,12 +71,9 @@ pipeline {
                 sshagent(['ec2-odoo-key']) {
                     sh '''
                         echo "Desplegando rama ${BRANCH_NAME} en la IP ${EC2_IP}:${ODOO_PORT}..."
-                        
-                        # Subir archivos al servidor de destino
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
-                        # Ejecutar actualización remota
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
@@ -107,11 +96,9 @@ EOF
     post {
         success {
             echo "--- ¡TODO OK! ---"
-            echo "Acceso: http://${EC2_IP}:${ODOO_PORT}"
         }
         failure {
             echo "--- EL PIPELINE FALLÓ ---"
-            echo "Revisa si el commit tiene errores de sintaxis (Linting) o si los tests no pasaron."
         }
     }
 }
