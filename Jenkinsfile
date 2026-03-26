@@ -81,31 +81,26 @@ pipeline {
             steps {
                 sshagent(['ec2-odoo-key']) {
                     sh '''
-                        # Crear directorio y limpiar solo lo necesario
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
-                            
-                            # Exportar variables para Docker Compose
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
                             export POSTGRES_DB=${POSTGRES_DB}
                             export POSTGRES_USER=${POSTGRES_USER}
                             export POSTGRES_PASSWORD='${DB_PASS_SECRET}'
                             
-                            # Levantar infraestructura
-                            docker compose up -d --build --remove-orphans
+                            # 1. Bajamos lo anterior para asegurar limpieza de puertos
+                            docker compose down --remove-orphans
                             
-                            echo "Esperando a que la DB esté lista..."
-                            sleep 10
+                            # 2. Levantamos e iniciamos la actualización en un contenedor temporal
+                            # Usamos 'run' en lugar de 'exec' para evitar conflictos de puerto
+                            docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
                             
-                            # Forzar actualización de módulos en la instancia de destino
-                            docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
-                            
-                            # Reiniciar para aplicar cambios finales
-                            docker compose restart odoo
+                            # 3. Ahora sí, levantamos el entorno productivo
+                            docker compose up -d
 EOF
                     '''
                 }
