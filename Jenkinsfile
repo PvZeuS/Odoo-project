@@ -13,10 +13,11 @@ pipeline {
     }
 
     stages {
-        stage('Cleanup Disk') {
+        stage('Disk Maintenance') {
             steps {
-                echo "--- LIMPIANDO IMÁGENES HUÉRFANAS ---"
-                sh 'docker image prune -f'
+                echo "--- LIMPIEZA PREVENTIVA ---"
+                // Borramos lo que falló anteriormente para empezar limpios
+                sh 'docker system prune -f'
             }
         }
 
@@ -36,7 +37,7 @@ pipeline {
                     def targetModule = getTargetModule(commitMsg)
                     
                     if (targetModule) {
-                        echo "--- EJECUTANDO TESTS PARA EL MÓDULO: ${targetModule} ---"
+                        echo "--- EJECUTANDO TESTS EN ODOO 19.0 ---"
                         sh """
                             docker network create test-net-${BUILD_NUMBER} || true
                             
@@ -46,13 +47,13 @@ pipeline {
                                 -e POSTGRES_USER=odoo \
                                 postgres:15-alpine
                             
-                            sleep 20
+                            sleep 25
                             
-                            # Usamos Odoo 18.0 para el entorno de test por estabilidad y espacio
+                            # USAMOS ODOO 19.0 OFICIAL
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
                                 -v \${WORKSPACE}/addons:/mnt/extra-addons \
-                                odoo:18.0 odoo \
+                                odoo:19.0 odoo \
                                 -d odoo_test --db_host db-test-${BUILD_NUMBER} \
                                 --db_user odoo --db_password='${DB_PASS_SECRET}' \
                                 -i base,${targetModule} --test-enable --stop-after-init --log-level=test
@@ -77,7 +78,6 @@ pipeline {
             steps {
                 sshagent(['ec2-odoo-key']) {
                     sh '''
-                        echo "Desplegando rama ${BRANCH_NAME} en la IP ${EC2_IP}:${ODOO_PORT}..."
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
@@ -101,10 +101,9 @@ EOF
     }
 
     post {
-        success { echo "--- ¡SISTEMA ONLINE! http://${EC2_IP}:${ODOO_PORT} ---" }
+        success { echo "--- ¡TODO LISTO EN ODOO 19! http://${EC2_IP}:${ODOO_PORT} ---" }
         failure { echo "--- EL PIPELINE FALLÓ ---" }
         always {
-            // Limpieza preventiva después de cada build
             sh 'docker image prune -f'
         }
     }
