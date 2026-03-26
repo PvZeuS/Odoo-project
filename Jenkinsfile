@@ -9,8 +9,7 @@ pipeline {
         ODOO_PORT      = branchPort()
         POSTGRES_DB    = "db_${env.BRANCH_NAME}"
         POSTGRES_USER  = 'odoo'
-        // Definimos la credencial aquí, pero la inyectaremos de forma segura en los scripts
-        DB_PASS_CRED   = credentials('odoo-db-password')
+        DB_PASS_SECRET = credentials('odoo-db-password')
     }
 
     stages {
@@ -22,12 +21,16 @@ pipeline {
 
         stage('Linting & Static Analysis') {
             steps {
-                echo "--- Analizando código con Flake8 ---"
+                echo "--- Analizando código con Flake8 (vía Docker) ---"
                 sh """
-                    docker run --rm -v \$(pwd):/apps -w /apps python:3.12-slim sh -c "
-                        pip install flake8 && \
-                        flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
-                    "
+                    docker run --rm \
+                        -v ${env.WORKSPACE}:/apps \
+                        -w /apps \
+                        python:3.12-slim sh -c "
+                            pip install flake8 && \
+                            flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics && \
+                            flake8 ./addons --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+                        "
                 """
             }
         }
@@ -39,36 +42,41 @@ pipeline {
                     def targetModule = getTargetModule(commitMsg)
                     
                     if (targetModule) {
-                        // Pasamos la contraseña como variable de entorno del shell, NO interpolada en el string de Groovy
-                        withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
-                            sh """
-                                docker network create test-net-${BUILD_NUMBER} || true
-                                
-                                docker run -d --name db-test-${BUILD_NUMBER} \
-                                    --network test-net-${BUILD_NUMBER} \
-                                    -e POSTGRES_PASSWORD=\$DB_PASS \
-                                    -e POSTGRES_USER=odoo \
-                                    -e POSTGRES_DB=postgres \
-                                    postgres:16-alpine
-                                
-                                sleep 10
+                        echo "--- EJECUTANDO TESTS PARA: ${targetModule} ---"
+                        sh "docker network create test-net-${BUILD_NUMBER} || true"
+                        
+                        sh """
+                            docker run -d --name db-test-${BUILD_NUMBER} \
+                                --network test-net-${BUILD_NUMBER} \
+                                -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' \
+                                -e POSTGRES_USER=odoo \
+                                -e POSTGRES_DB=postgres \
+                                postgres:16-alpine
+                        """
+                        
+                        sleep 15
 
-                                docker run --rm --name odoo-test-${BUILD_NUMBER} \
-                                    --network test-net-${BUILD_NUMBER} \
-                                    -v \$(pwd)/addons:/mnt/extra-addons \
-                                    --user root \
-                                    odoo:19.0 sh -c "
-                                        pip install --break-system-packages websocket-client && \
-                                        odoo -d odoo_test \
-                                        --db_host db-test-${BUILD_NUMBER} \
-                                        --db_user odoo \
-                                        --db_password=\$DB_PASS \
-                                        --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-                                        -i ${targetModule} \
-                                        --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}
-                                    "
-                            """
-                        }
+                        sh """
+                          docker run --rm --name odoo-test-${BUILD_NUMBER} \
+                          --network test-net-${BUILD_NUMBER} \
+                          -v ${env.WORKSPACE}/addons:/mnt/extra-addons \
+                          --user root \
+                          odoo:19.0 sh -c "
+                              pip install --break-system-packages websocket-client && \
+                              odoo -d odoo_test \
+                              --db_host db-test-${BUILD_NUMBER} \
+                              --db_user odoo \
+                              --db_password='${DB_PASS_SECRET}' \
+                              --addons-path=/mnt/extra-addons \
+                              -i ${targetModule} \
+                              --test-enable \
+                              --stop-after-init \
+                              --log-level=test \
+                              --test-tags /${targetModule}
+                          "
+                        """
+                    } else {
+                        echo "--- SALTANDO TESTS: No se detectó el patrón MOD:en el commit ---"
                     }
                 }
             }
@@ -83,26 +91,43 @@ pipeline {
         stage('Deploy to EC2') {
             steps {
                 sshagent(['ec2-odoo-key']) { 
-                    withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
-                        sh """
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
-                            scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                    sh """
+                        echo "Preparando despliegue en ${EC2_IP}..."
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
+                        scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                        
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
+                            cd ${REMOTE_DIR}
                             
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
-                                cd ${REMOTE_DIR}
-                                sed -i "s/^db_password =.*/db_password = \$DB_PASS/" ./config/odoo.conf
-                                
-                                export POSTGRES_PASSWORD=\$DB_PASS
-                                docker compose down --remove-orphans
-                                docker compose up -d
-                                sleep 5
-                                docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
+                            # Ajustar odoo.conf dinámicamente
+                            sed -i "s/^db_password =.*/db_password = ${DB_PASS_SECRET}/" ./config/odoo.conf
+                            sed -i "s/^db_name =.*/db_name = ${POSTGRES_DB}/" ./config/odoo.conf
+
+                            export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+                            export ODOO_PORT=${ODOO_PORT}
+                            export POSTGRES_DB=${POSTGRES_DB}
+                            export POSTGRES_USER=${POSTGRES_USER}
+                            export POSTGRES_PASSWORD='${DB_PASS_SECRET}'
+                            
+                            echo "--- Levantando servicios ---"
+                            docker compose down --remove-orphans
+                            docker compose up -d
+                            
+                            echo "--- Actualizando módulos y base de datos ---"
+                            sleep 10
+                            docker compose exec -T odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
+                            
+                            docker compose ps
 EOF
-                        """
-                    }
+                    """
                 }
             }
         }
+    }
+
+    post {
+        success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- PIPELINE FALLIDO: Revisa los logs de Linting o Tests ---" }
     }
 }
 
