@@ -5,9 +5,9 @@ pipeline {
         EC2_USER       = 'ubuntu'
         EC2_IP         = branchIP()
         REMOTE_DIR     = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
-        COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME.replaceAll(/[^a-zA-Z0-9]/, '_')}"
+        COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME}"
         ODOO_PORT      = branchPort()
-        POSTGRES_DB    = "odoo_db_${env.BRANCH_NAME.replaceAll(/[^a-zA-Z0-9]/, '_')}"
+        POSTGRES_DB    = "db_${env.BRANCH_NAME}"
         POSTGRES_USER  = 'odoo'
         DB_PASS_SECRET = credentials('odoo-db-password')
     }
@@ -24,12 +24,10 @@ pipeline {
                 script {
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
                     def targetModule = getTargetModule(commitMsg)
-                    // Obtenemos la ruta absoluta real del workspace
                     def workspacePath = sh(script: 'pwd', returnStdout: true).trim()
                     
                     if (targetModule) {
-                        echo "--- TEST TARGET: ${targetModule} ---"
-                        
+                        echo "--- EJECUTANDO TESTS PARA: ${targetModule} ---"
                         sh "docker network create test-net-${BUILD_NUMBER} || true"
                         
                         sh """
@@ -60,10 +58,10 @@ pipeline {
                               --stop-after-init \
                               --log-level=test \
                               --test-tags /${targetModule}
-                         "
-                       """
+                          "
+                        """
                     } else {
-                        echo "--- SALTANDO TESTS: No MOD: pattern ---"
+                        echo "--- SALTANDO TESTS: Sin patrón MOD: ---"
                     }
                 }
             }
@@ -80,14 +78,16 @@ pipeline {
 
         stage('Deploy to EC2') {
             steps {
-                // CORRECCIÓN: Usa el ID de credencial correcto (ec2-odoo-key)
                 sshagent(['ec2-odoo-key']) { 
-                    sh '''
+                    sh """
+                        echo "Conectando a ${EC2_IP} para desplegar rama ${env.BRANCH_NAME}..."
+                        
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
+                            
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
                             export ODOO_PORT=${ODOO_PORT}
                             export POSTGRES_DB=${POSTGRES_DB}
@@ -98,15 +98,15 @@ pipeline {
                             docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
                             docker compose up -d
 EOF
-                    '''
+                    """
                 }
             }
         }
     }
 
     post {
-        success { echo "--- EXITOSO: http://${EC2_IP}:${ODOO_PORT} ---" }
-        failure { echo "---  FALLÓ ---" }
+        success { echo "--- DESPLIEGUE OK: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- PIPELINE FALLIDO ---" }
     }
 }
 
@@ -116,5 +116,12 @@ def getTargetModule(String msg) {
     return match ? match[0][1] : null
 }
 
-def branchIP() { return (env.BRANCH_NAME == 'main') ? '3.144.231.64' : '18.219.33.101' }
-def branchPort() { return (env.BRANCH_NAME == 'main') ? '8071' : '8070' }
+
+
+def branchIP() { 
+    return (env.BRANCH_NAME == 'main') ? '3.144.231.64' : '18.219.33.101' 
+}
+
+def branchPort() { 
+    return (env.BRANCH_NAME == 'main') ? '8071' : '8070' 
+}
