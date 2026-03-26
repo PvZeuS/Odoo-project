@@ -41,21 +41,21 @@ pipeline {
                         sh """
                             docker network create test-net-${BUILD_NUMBER} || true
                             
+                            # Añadimos --network-alias db para que Odoo lo encuentre siempre
                             docker run -d --name db-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
+                                --network-alias db \
                                 -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' \
                                 -e POSTGRES_USER=odoo \
                                 postgres:15-alpine
                             
-                            sleep 25
+                            sleep 30
                             
-                            # USAMOS ODOO 19.0 OFICIAL
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
                                 -v \${WORKSPACE}/addons:/mnt/extra-addons \
                                 odoo:19.0 odoo \
-                                -d odoo_test --db_host db-test-${BUILD_NUMBER} \
-                                --db_user odoo --db_password='${DB_PASS_SECRET}' \
+                                -d odoo_test --db_host db --db_user odoo --db_password='${DB_PASS_SECRET}' \
                                 -i base,${targetModule} --test-enable --stop-after-init --log-level=test
                         """
                     } else {
