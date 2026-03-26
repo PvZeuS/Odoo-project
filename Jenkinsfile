@@ -57,10 +57,10 @@ pipeline {
                         // 2. Ejecutar Odoo apuntando a esa DB
                         sh """
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
-                            --network test-net-${BUILD_NUMBER} \
-                            -v \${WORKSPACE}/addons:/mnt/extra-addons \
-                            --user root \
-                            odoo:19.0 sh -c "pip install websocket-client && odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password='${DB_PASS_SECRET}' -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
+                              -v \${WORKSPACE}/addons:/mnt/extra-addons \
+                              --user root \
+                              odoo:19.0 sh -c "pip install --break-system-packages websocket-client && odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password='${DB_PASS_SECRET}' -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
+                        
                         """
                     } else {
                         echo "--- SALTANDO TESTS: No se detectó 'MOD:modulo' ---"
