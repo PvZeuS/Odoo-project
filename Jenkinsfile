@@ -31,15 +31,14 @@ pipeline {
         }
 
         stage('Smart Unit Tests') {
-            steps {
-                script {
+             steps {
+                 script {
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
                     def targetModule = getTargetModule(commitMsg)
                     
                     if (targetModule) {
                         echo "--- PREPARANDO ENTORNO DE TEST PARA: ${targetModule} ---"
                         
-                        // 1. Crear red y base de datos temporal
                         sh """
                             docker network create test-net-${BUILD_NUMBER} || true
                             docker run -d --name db-test-${BUILD_NUMBER} \
@@ -50,17 +49,16 @@ pipeline {
                                 postgres:15-alpine
                         """
                         
-                        // Esperar un momento a que la DB responda
                         sleep 10
 
                         echo "--- EJECUTANDO TESTS EN ODOO 19.0 ---"
-                        // 2. Ejecutar Odoo apuntando a esa DB
+                        // FÍJATE AQUÍ: He añadido --network y corregido el addons-path
                         sh """
                             docker run --rm --name odoo-test-${BUILD_NUMBER} \
-                              -v \${WORKSPACE}/addons:/mnt/extra-addons \
-                              --user root \
-                              odoo:19.0 sh -c "pip install --break-system-packages websocket-client && odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password='${DB_PASS_SECRET}' -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
-                        
+                            --network test-net-${BUILD_NUMBER} \
+                            -v \${WORKSPACE}/addons:/mnt/extra-addons \
+                            --user root \
+                            odoo:19.0 sh -c "pip install --break-system-packages websocket-client && odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password='${DB_PASS_SECRET}' --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
                         """
                     } else {
                         echo "--- SALTANDO TESTS: No se detectó 'MOD:modulo' ---"
