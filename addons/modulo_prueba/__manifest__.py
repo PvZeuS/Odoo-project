@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización staging',
+    'name': 'Módulo de Prueba Automatización staging v2',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
