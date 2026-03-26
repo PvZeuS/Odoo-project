@@ -2,7 +2,5 @@
 load-plugins=pylint_odoo
 
 [MESSAGES CONTROL]
-# Desactivamos avisos estéticos (espacios, longitud de línea) 
-# y dejamos solo errores reales y advertencias de Odoo
 disable=all
 enable=odoo-lint,fatal,error,warning
