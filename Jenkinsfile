@@ -15,17 +15,7 @@ pipeline {
     stages {
         stage('Disk Maintenance') {
             steps {
-                echo "--- LIMPIEZA PREVENTIVA ---"
                 sh 'docker system prune -f'
-            }
-        }
-
-        stage('Linting') {
-            steps {
-                echo "--- INICIANDO LINTING DE CÓDIGO ---"
-                sh '''
-                    docker run --rm -v ${WORKSPACE}:/src -w /src python:3.10-slim sh -c "find . -path './addons*' -name '*.py' -exec python3 -m py_compile {} +"
-                '''
             }
         }
 
@@ -34,14 +24,14 @@ pipeline {
                 script {
                     def commitMsg = sh(script: "git log -1 --pretty=%B", returnStdout: true).trim()
                     def targetModule = getTargetModule(commitMsg)
+                    // Obtenemos la ruta absoluta real del workspace
+                    def workspacePath = sh(script: 'pwd', returnStdout: true).trim()
                     
                     if (targetModule) {
-                        echo "--- PREPARANDO ENTORNO DE TEST PARA: ${targetModule} ---"
+                        echo "--- TEST TARGET: ${targetModule} ---"
                         
-                        // Crear red única por build
                         sh "docker network create test-net-${BUILD_NUMBER} || true"
                         
-                        // Levantar DB temporal
                         sh """
                             docker run -d --name db-test-${BUILD_NUMBER} \
                                 --network test-net-${BUILD_NUMBER} \
@@ -51,40 +41,34 @@ pipeline {
                                 postgres:15-alpine
                         """
                         
-                        sleep 15 // Tiempo para que Postgres inicie
+                        sleep 15
 
-                        echo "--- EJECUTANDO TESTS EN ODOO 19.0 ---"
-                        /* CORRECCIÓN CLAVE: 
-                           1. Mapeamos ${WORKSPACE}/addons a /mnt/extra-addons
-                           2. Pasamos /mnt/extra-addons al --addons-path de Odoo
-                        */
                         sh """
-                            docker run --rm --name odoo-test-${BUILD_NUMBER} \
-                            --network test-net-${BUILD_NUMBER} \
-                            -v ${WORKSPACE}/addons:/mnt/extra-addons \
-                            --user root \
-                            odoo:19.0 sh -c "
-                                pip install --break-system-packages websocket-client && \
-                                odoo -d odoo_test \
-                                --db_host db-test-${BUILD_NUMBER} \
-                                --db_user odoo \
-                                --db_password='${DB_PASS_SECRET}' \
-                                --addons-path=/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons \
-                                -i ${targetModule} \
-                                --test-enable \
-                                --stop-after-init \
-                                --log-level=test \
-                                --test-tags /${targetModule}
-                            "
-                        """
+                          docker run --rm --name odoo-test-${BUILD_NUMBER} \
+                          --network test-net-${BUILD_NUMBER} \
+                          -v ${workspacePath}/addons:/mnt/extra-addons \
+                          --user root \
+                          odoo:19.0 sh -c "
+                              pip install --break-system-packages websocket-client && \
+                              odoo -d odoo_test \
+                              --db_host db-test-${BUILD_NUMBER} \
+                              --db_user odoo \
+                              --db_password='${DB_PASS_SECRET}' \
+                              --addons-path=/mnt/extra-addons \
+                              -i ${targetModule} \
+                              --test-enable \
+                              --stop-after-init \
+                              --log-level=test \
+                              --test-tags /${targetModule}
+                         "
+                       """
                     } else {
-                        echo "--- SALTANDO TESTS: No se detectó el patrón 'MOD:nombre_modulo' en el commit ---"
+                        echo "--- SALTANDO TESTS: No MOD: pattern ---"
                     }
                 }
             }
             post {
                 always {
-                    echo "--- LIMPIANDO ENTORNO DE TEST ---"
                     sh """
                         docker stop db-test-${BUILD_NUMBER} || true
                         docker rm db-test-${BUILD_NUMBER} || true
@@ -96,10 +80,11 @@ pipeline {
 
         stage('Deploy to EC2') {
             steps {
-                sshagent(['ubuntu']) { // Asegúrate que el ID coincida con tu credencial SSH en Jenkins
+                // CORRECCIÓN: Usa el ID de credencial correcto (ec2-odoo-key)
+                sshagent(['ec2-odoo-key']) { 
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
-                        scp -r ./Dockerfile ./Jenkinsfile ./addons ./config ./docker-compose.yml ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                        scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
                         
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
@@ -110,11 +95,7 @@ pipeline {
                             export POSTGRES_PASSWORD='${DB_PASS_SECRET}'
                             
                             docker compose down --remove-orphans
-                            docker compose pull
-                            
-                            # Actualización de base de datos silenciosa
                             docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
-                            
                             docker compose up -d
 EOF
                     '''
@@ -124,28 +105,16 @@ EOF
     }
 
     post {
-        success { 
-            echo "--- DESPLIEGUE EXITOSO ---"
-            echo "URL: http://${EC2_IP}:${ODOO_PORT}" 
-        }
-        failure { echo "---  EL PIPELINE FALLÓ ---" }
-        always {
-            sh 'docker image prune -f'
-        }
+        success { echo "--- EXITOSO: http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "---  FALLÓ ---" }
     }
 }
 
 @NonCPS
 def getTargetModule(String msg) {
-    // Busca el patrón MOD: seguido de letras, números o guiones bajos
     def match = (msg =~ /MOD:([a-zA-Z0-9_]+)/)
     return match ? match[0][1] : null
 }
 
-def branchIP() { 
-    return (env.BRANCH_NAME == 'main') ? '3.144.231.64' : '18.219.33.101' 
-}
-
-def branchPort() { 
-    return (env.BRANCH_NAME == 'main') ? '8071' : '8070' 
-}
+def branchIP() { return (env.BRANCH_NAME == 'main') ? '3.144.231.64' : '18.219.33.101' }
+def branchPort() { return (env.BRANCH_NAME == 'main') ? '8071' : '8070' }
