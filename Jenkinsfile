@@ -16,9 +16,9 @@ pipeline {
         stage('Linting') {
             steps {
                 echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
-                // Montamos el actual en /src y buscamos desde ahí sin rutas absolutas del sistema
+                // Usamos la ruta absoluta de Jenkins y buscamos con punto (.)
                 sh '''
-                    docker run --rm -v $(pwd):/src -w /src python:3.10-slim sh -c "find addons -name '*.py' -exec python3 -m py_compile {} +"
+                    docker run --rm -v ${WORKSPACE}:/src -w /src python:3.10-slim sh -c "find . -path './addons*' -name '*.py' -exec python3 -m py_compile {} +"
                 '''
             }
         }
