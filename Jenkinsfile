@@ -15,15 +15,14 @@ pipeline {
     stages {
         stage('Cleanup Disk') {
             steps {
-                echo "--- LIBERANDO ESPACIO ANTES DE EMPEZAR ---"
-                // Borra imágenes huérfanas y contenedores viejos para evitar el 'no space left'
-                sh 'docker system prune -f'
+                echo "--- LIMPIANDO IMÁGENES HUÉRFANAS ---"
+                sh 'docker image prune -f'
             }
         }
 
         stage('Linting') {
             steps {
-                echo "--- INICIANDO LINTING DE CÓDIGO (Sintaxis) ---"
+                echo "--- INICIANDO LINTING DE CÓDIGO ---"
                 sh '''
                     docker run --rm -v ${WORKSPACE}:/src -w /src python:3.10-slim sh -c "find . -path './addons*' -name '*.py' -exec python3 -m py_compile {} +"
                 '''
@@ -40,10 +39,23 @@ pipeline {
                         echo "--- EJECUTANDO TESTS PARA EL MÓDULO: ${targetModule} ---"
                         sh """
                             docker network create test-net-${BUILD_NUMBER} || true
-                            docker run -d --name db-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' -e POSTGRES_USER=odoo postgres:15-alpine
+                            
+                            docker run -d --name db-test-${BUILD_NUMBER} \
+                                --network test-net-${BUILD_NUMBER} \
+                                -e POSTGRES_PASSWORD='${DB_PASS_SECRET}' \
+                                -e POSTGRES_USER=odoo \
+                                postgres:15-alpine
+                            
                             sleep 20
-                            # USAMOS LA VERSIÓN SLIM PARA AHORRAR ESPACIO
-                            docker run --rm --name odoo-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} -v \$(pwd)/addons:/mnt/extra-addons odoo:19.0-slim odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password='${DB_PASS_SECRET}' -i base,${targetModule} --test-enable --stop-after-init --log-level=test
+                            
+                            # Usamos Odoo 18.0 para el entorno de test por estabilidad y espacio
+                            docker run --rm --name odoo-test-${BUILD_NUMBER} \
+                                --network test-net-${BUILD_NUMBER} \
+                                -v \${WORKSPACE}/addons:/mnt/extra-addons \
+                                odoo:18.0 odoo \
+                                -d odoo_test --db_host db-test-${BUILD_NUMBER} \
+                                --db_user odoo --db_password='${DB_PASS_SECRET}' \
+                                -i base,${targetModule} --test-enable --stop-after-init --log-level=test
                         """
                     } else {
                         echo "--- SALTANDO TESTS: No se detectó 'MOD:modulo' ---"
@@ -65,8 +77,10 @@ pipeline {
             steps {
                 sshagent(['ec2-odoo-key']) {
                     sh '''
+                        echo "Desplegando rama ${BRANCH_NAME} en la IP ${EC2_IP}:${ODOO_PORT}..."
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
                         scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                        
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
                             cd ${REMOTE_DIR}
                             export COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
@@ -74,6 +88,7 @@ pipeline {
                             export POSTGRES_DB=${POSTGRES_DB}
                             export POSTGRES_USER=${POSTGRES_USER}
                             export POSTGRES_PASSWORD='${DB_PASS_SECRET}'
+                            
                             docker compose up -d --build --remove-orphans
                             sleep 15
                             docker compose run --rm odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init
@@ -86,8 +101,10 @@ EOF
     }
 
     post {
+        success { echo "--- ¡SISTEMA ONLINE! http://${EC2_IP}:${ODOO_PORT} ---" }
+        failure { echo "--- EL PIPELINE FALLÓ ---" }
         always {
-            // Limpieza final para que la siguiente ejecución no falle por espacio
+            // Limpieza preventiva después de cada build
             sh 'docker image prune -f'
         }
     }
