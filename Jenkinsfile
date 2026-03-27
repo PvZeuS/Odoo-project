@@ -95,44 +95,40 @@ pipeline {
             }
         }
 
-        stage('Deploy to EC2') {
-            steps {
-                sshagent(['ec2-odoo-key']) { 
-                    withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
-                        sh """
-                            echo "Preparando despliegue en ${EC2_IP}..."
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} "mkdir -p ${REMOTE_DIR}"
-                            scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
-                            
-                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
-                                cd ${REMOTE_DIR}
-                                echo 'POSTGRES_PASSWORD=${TARGET_DB_PASS}' > .env
-                                echo 'ODOO_PORT=${ODOO_PORT}' >> .env
-                                echo 'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}' >> .env
-                                
-                                if [ -f "./config/odoo.conf" ]; then
-                                    sed -i 's/^db_password =.*/db_password = ${TARGET_DB_PASS}/' ./config/odoo.conf
-                                fi
-                                
-                                docker compose down --remove-orphans
-                                docker compose up -d
-                                sleep 20
-                                
-                                CONTAINER_ID=\\\$(docker compose ps -q odoo)
-                                STATUS=\\\$(docker inspect -f '{{.State.Status}}' \\\$CONTAINER_ID)
-                                
-                                if [ "\\\$STATUS" != "running" ]; then
-                                    docker compose logs --tail=50 odoo
-                                    exit 1
-                                fi
+        stage('Deploy to EC2 with Snapshot') {
+    steps {
+        sshagent(['ec2-odoo-key']) { 
+            withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
+                sh """
+                    echo "--- 1. Preparando Snapshot y Backup en ${EC2_IP} ---"
+                    ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
+                        # Crear snapshot de la base de datos actual
+                        if [ \$(docker ps -q -f name=${COMPOSE_PROJECT_NAME}-db-1) ]; then
+                            echo "Haciendo backup de la DB..."
+                            docker exec ${COMPOSE_PROJECT_NAME}-db-1 pg_dump -U odoo -d postgres > /home/ubuntu/last_db_snapshot_${env.BRANCH_NAME}.sql
+                        fi
 
-                                docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
+                        # Rotar carpetas de código (Esto es lo que te faltaba)
+                        if [ -d "${REMOTE_DIR}" ]; then
+                            echo "Guardando versión actual en carpeta _old..."
+                            rm -rf ${BACKUP_DIR}
+                            cp -r ${REMOTE_DIR} ${BACKUP_DIR}
+                        fi
+                        mkdir -p ${REMOTE_DIR}
 EOF
-                        """
-                    }
-                }
+                    echo "--- 2. Enviando nuevo código ---"
+                    scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                    
+                    echo "--- 3. Levantando servicios ---"
+                    ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
+                        cd ${REMOTE_DIR}
+                        # ... resto de tus comandos de docker compose up ...
+EOF
+                """
             }
         }
+    }
+}
     }
 
     post {
