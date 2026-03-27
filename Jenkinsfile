@@ -29,16 +29,12 @@ pipeline {
 
         stage('Linting') {
             steps {
-                echo "--- Analizando código con Flake8 ---"
-                sh """
-                    pip install flake8 --break-system-packages || pip install flake8 || true
-                    if [ -d './addons' ]; then
-                        flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
-                    else
-                        echo "ADVERTENCIA: No se encontró carpeta addons."
-                    fi
+               sh """
+                   # Intentar usar python3 -m flake8 que es más seguro
+                   python3 -m pip install flake8 --break-system-packages || true
+                   python3 -m flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
                 """
-            }
+          }
         }
 
         stage('Smart Unit Tests') {
