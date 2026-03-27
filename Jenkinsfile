@@ -2,13 +2,15 @@ pipeline {
     agent any
 
     environment {
-        EC2_USER       = 'ubuntu'
-        EC2_IP         = branchIP()
-        REMOTE_DIR     = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
-        POSTGRES_DB    = "db_${env.BRANCH_NAME}"
-        ODOO_PORT      = branchPort()
+        EC2_USER             = 'ubuntu'
+        EC2_IP               = branchIP()
+        REMOTE_DIR           = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}"
+        // Se define BACKUP_DIR aquí para que esté disponible en todo el pipeline
+        BACKUP_DIR           = "/home/ubuntu/projects/odoo_${env.BRANCH_NAME}_old"
+        POSTGRES_DB          = "db_${env.BRANCH_NAME}"
+        ODOO_PORT            = branchPort()
         COMPOSE_PROJECT_NAME = "odoo_${env.BRANCH_NAME.replaceAll('[^a-zA-Z0-9]', '_')}"
-        DB_PASS_CRED   = credentials('odoo-db-password')
+        DB_PASS_CRED         = credentials('odoo-db-password')
     }
 
     stages {
@@ -21,20 +23,19 @@ pipeline {
 
         stage('Disk Maintenance') {
             steps {
-                sh 'docker system prune -f --volumes'
+                sh 'docker system prune -f --volumes || true'
             }
         }
 
         stage('Linting') {
             steps {
-                echo "--- Analizando código con Flake8 (Local) ---"
-                // Instalamos y corremos flake8 directamente en el agente para evitar problemas de volúmenes Docker
+                echo "--- Analizando código con Flake8 ---"
                 sh """
-                    pip install flake8 --break-system-packages || pip install flake8
+                    pip install flake8 --break-system-packages || pip install flake8 || true
                     if [ -d './addons' ]; then
                         flake8 ./addons --count --select=E9,F63,F7,F82 --show-source --statistics
                     else
-                        echo "ADVERTENCIA: No se encontró carpeta addons, saltando linting."
+                        echo "ADVERTENCIA: No se encontró carpeta addons."
                     fi
                 """
             }
@@ -59,17 +60,14 @@ pipeline {
                                 
                                 sleep 15
 
-                                # 1. Creamos el contenedor
                                 docker run -d --name odoo-test-${BUILD_NUMBER} \
                                     --network test-net-${BUILD_NUMBER} \
                                     -e PGPASSWORD=\$DB_PASS \
                                     odoo:19.0 tail -f /dev/null
 
-                                # 2. Inyectamos los addons en una ruta que SIEMPRE existe
                                 docker exec -u root odoo-test-${BUILD_NUMBER} mkdir -p /mnt/extra-addons
                                 docker cp ./addons/. odoo-test-${BUILD_NUMBER}:/mnt/extra-addons/
                                 
-                                # 3. Ejecutamos el test
                                 docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
                                     pip install --break-system-packages websocket-client && \
                                     odoo -d odoo_test \
@@ -82,53 +80,65 @@ pipeline {
                             """
                         }
                     } else {
-                        echo "--- SALTANDO TESTS ---"
+                        echo "--- SALTANDO TESTS (No se detectó MOD:nombre en commit) ---"
                     }
                 }
             }
             post {
                 always {
-                    sh "docker stop odoo-test-${BUILD_NUMBER} || true && docker rm odoo-test-${BUILD_NUMBER} || true"
-                    sh "docker stop db-test-${BUILD_NUMBER} || true && docker rm db-test-${BUILD_NUMBER} || true"
-                    sh "docker network rm test-net-${BUILD_NUMBER} || true"
+                    sh """
+                        docker stop odoo-test-${BUILD_NUMBER} db-test-${BUILD_NUMBER} || true
+                        docker rm odoo-test-${BUILD_NUMBER} db-test-${BUILD_NUMBER} || true
+                        docker network rm test-net-${BUILD_NUMBER} || true
+                    """
                 }
             }
         }
 
         stage('Deploy to EC2 with Snapshot') {
-    steps {
-        sshagent(['ec2-odoo-key']) { 
-            withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
-                sh """
-                    echo "--- 1. Preparando Snapshot y Backup en ${EC2_IP} ---"
-                    ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
-                        # Crear snapshot de la base de datos actual
-                        if [ \$(docker ps -q -f name=${COMPOSE_PROJECT_NAME}-db-1) ]; then
-                            echo "Haciendo backup de la DB..."
-                            docker exec ${COMPOSE_PROJECT_NAME}-db-1 pg_dump -U odoo -d postgres > /home/ubuntu/last_db_snapshot_${env.BRANCH_NAME}.sql
-                        fi
+            steps {
+                sshagent(['ec2-odoo-key']) { 
+                    withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
+                        sh """
+                            echo "--- 1. Preparando Snapshot y Backup en ${EC2_IP} ---"
+                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << 'EOF'
+                                # Backup de DB actual antes de actualizar
+                                CONTAINER_DB="${COMPOSE_PROJECT_NAME}-db-1"
+                                if [ \$(docker ps -q -f name=\$CONTAINER_DB) ]; then
+                                    echo "Haciendo backup de la DB..."
+                                    docker exec \$CONTAINER_DB pg_dump -U odoo -d postgres > /home/ubuntu/last_db_snapshot_${env.BRANCH_NAME}.sql
+                                fi
 
-                        # Rotar carpetas de código (Esto es lo que te faltaba)
-                        if [ -d "${REMOTE_DIR}" ]; then
-                            echo "Guardando versión actual en carpeta _old..."
-                            rm -rf ${BACKUP_DIR}
-                            cp -r ${REMOTE_DIR} ${BACKUP_DIR}
-                        fi
-                        mkdir -p ${REMOTE_DIR}
+                                # Rotar carpetas de código
+                                if [ -d "${REMOTE_DIR}" ]; then
+                                    echo "Guardando versión actual en carpeta _old..."
+                                    rm -rf ${BACKUP_DIR}
+                                    cp -r ${REMOTE_DIR} ${BACKUP_DIR}
+                                fi
+                                mkdir -p ${REMOTE_DIR}
 EOF
-                    echo "--- 2. Enviando nuevo código ---"
-                    scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
-                    
-                    echo "--- 3. Levantando servicios ---"
-                    ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
-                        cd ${REMOTE_DIR}
-                        # ... resto de tus comandos de docker compose up ...
+                            echo "--- 2. Enviando nuevo código ---"
+                            scp -r ./* ${EC2_USER}@${EC2_IP}:${REMOTE_DIR}
+                            
+                            echo "--- 3. Levantando servicios y actualizando ---"
+                            ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_IP} << EOF
+                                cd ${REMOTE_DIR}
+                                echo "POSTGRES_PASSWORD=${TARGET_DB_PASS}" > .env
+                                echo "ODOO_PORT=${ODOO_PORT}" >> .env
+                                echo "COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}" >> .env
+                                
+                                docker compose down --remove-orphans
+                                docker compose up -d
+                                sleep 15
+                                
+                                # Actualizar módulos
+                                docker compose exec -T -e PGPASSWORD='${TARGET_DB_PASS}' odoo odoo -d ${POSTGRES_DB} -u all --stop-after-init --no-http
 EOF
-                """
+                        """
+                    }
+                }
             }
         }
-    }
-}
     }
 
     post {
