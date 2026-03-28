@@ -2,11 +2,10 @@ pipeline {
     agent any
 
     environment {
-        // En local, usamos el nombre del contenedor mock
         EC2_IP               = 'ec2-staging-mock' 
-        // Cambiamos a rutas donde el usuario odoo suele tener permisos en el contenedor
-        REMOTE_DIR           = "/var/lib/odoo/odoo_local"
-        BACKUP_DIR           = "/var/lib/odoo/odoo_local_old"
+        // FIX: Ruta correcta que Odoo lee según el volumen del compose
+        REMOTE_DIR           = "/mnt/extra-addons"
+        BACKUP_DIR           = "/mnt/extra-addons_old"
         POSTGRES_DB          = "db_local_demo"
         ODOO_PORT            = "8070"
         COMPOSE_PROJECT_NAME = "odoo_local_demo"
@@ -55,7 +54,7 @@ pipeline {
                                 docker exec -u root odoo-test-${BUILD_NUMBER} mkdir -p /mnt/extra-addons
                                 docker cp ./addons/. odoo-test-${BUILD_NUMBER}:/mnt/extra-addons/
                                 docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
-                                    pip install --break-system-packages websocket-client || true && \
+                                    pip install websocket-client || true && \
                                     odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password=\$DB_PASS \
                                     --addons-path=/mnt/extra-addons -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
                             """
@@ -79,7 +78,6 @@ pipeline {
                 withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
                     sh """
                         echo "--- 1. Limpiando y Preparando Directorio ---"
-                        # Limpiamos el contenido previo en el mock para evitar conflictos de versiones viejas
                         docker exec -u root ${EC2_IP} sh -c "
                             rm -rf ${REMOTE_DIR}/*
                             mkdir -p ${REMOTE_DIR}
@@ -87,8 +85,7 @@ pipeline {
                         "
 
                         echo "--- 2. Transfiriendo código ---"
-                        # Copiamos el contenido de la carpeta addons al directorio de addons de Odoo
-                        # Usamos ./addons/. para copiar solo el contenido
+                        # Copiamos el contenido de la carpeta addons al directorio mapeado
                         docker cp ./addons/. ${EC2_IP}:${REMOTE_DIR}/
 
                         echo "--- 3. Verificando transferencia ---"
