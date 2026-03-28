@@ -78,36 +78,23 @@ pipeline {
             steps {
                 withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
                     sh """
-                        echo "--- 1. Preparando Snapshot Local ---"
-                        # Ejecutamos el backup directamente desde Jenkins hacia el contenedor DB
-                        if [ \$(docker ps -q -f name=${COMPOSE_PROJECT_NAME}-db-1) ]; then
-                            docker exec ${COMPOSE_PROJECT_NAME}-db-1 pg_dump -U odoo -d postgres > last_db_snapshot_local.sql || true
-                        fi
-
-                        # Rotación de carpetas usando rutas con permisos
+                        echo "--- 1. Limpiando y Preparando Directorio ---"
+                        # Limpiamos el contenido previo en el mock para evitar conflictos de versiones viejas
                         docker exec -u root ${EC2_IP} sh -c "
-                            if [ -d '${REMOTE_DIR}' ]; then
-                                rm -rf ${BACKUP_DIR} && cp -r ${REMOTE_DIR} ${BACKUP_DIR}
-                            fi
+                            rm -rf ${REMOTE_DIR}/*
                             mkdir -p ${REMOTE_DIR}
                             chown -R odoo:odoo ${REMOTE_DIR}
                         "
 
                         echo "--- 2. Transfiriendo código ---"
-                        docker cp . ${EC2_IP}:${REMOTE_DIR}
+                        # Copiamos el contenido de la carpeta addons al directorio de addons de Odoo
+                        # Usamos ./addons/. para copiar solo el contenido
+                        docker cp ./addons/. ${EC2_IP}:${REMOTE_DIR}/
 
-                        echo "--- 3. Actualizando servicios ---"
-                        docker exec -u root ${EC2_IP} sh -c "
-                            cd ${REMOTE_DIR}
-                            echo 'POSTGRES_PASSWORD=${TARGET_DB_PASS}' > .env
-                            echo 'ODOO_PORT=${ODOO_PORT}' >> .env
-                            echo 'COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}' >> .env
-                            
-                            # Intentamos levantar el docker-compose interno si el mock tuviera docker, 
-                            # sino, simplemente reiniciamos el contenedor principal desde fuera
-                            exit
-                        "
-                        # Reiniciamos el contenedor mock para que tome cambios de código si están montados como volumen
+                        echo "--- 3. Verificando transferencia ---"
+                        docker exec ${EC2_IP} ls -l ${REMOTE_DIR}
+
+                        echo "--- 4. Reiniciando Odoo ---"
                         docker restart ${EC2_IP}
                         sleep 5
                     """
