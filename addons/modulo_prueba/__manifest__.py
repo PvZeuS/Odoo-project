@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización Test de error-sintaxis',
+    'name': 'Módulo de Prueba Automatización Pruebas exitosas',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
