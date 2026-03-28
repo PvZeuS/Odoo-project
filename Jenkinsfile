@@ -77,24 +77,21 @@ pipeline {
             steps {
                 withEnv(["TARGET_DB_PASS=${DB_PASS_CRED}"]) {
                     sh """
-                        echo "--- 1. Limpiando y Preparando Directorio ---"
-                        docker exec -u root ${EC2_IP} sh -c "
-                            mkdir -p ${REMOTE_DIR}
-                            rm -rf ${REMOTE_DIR}/*
-                            # Aseguramos que TODO /var/lib/odoo sea del usuario odoo
-                            chown -R odoo:odoo /mnt/extra-addons
-                            chown -R odoo:odoo /var/lib/odoo
-                        "
+                        echo "--- 1. Creando Backup de la versión anterior (Snapshot) ---"
+                        # Backup de la DB en un archivo dentro del contenedor de la DB
+                        docker exec ${COMPOSE_PROJECT_NAME}-db-1 pg_dump -U odoo -d postgres > last_db_snapshot_local.sql || true
+                        
+                        # Backup del código (Copiamos de la carpeta actual a la carpeta _old)
+                        docker exec -u root ${EC2_IP} mkdir -p ${BACKUP_DIR}
+                        docker exec -u root ${EC2_IP} sh -c "cp -r ${REMOTE_DIR}/* ${BACKUP_DIR}/"
 
-                        echo "--- 2. Transfiriendo código ---"
+                        echo "--- 2. Transfiriendo nuevo código ---"
+                        docker exec -u root ${EC2_IP} sh -c "rm -rf ${REMOTE_DIR}/*"
                         docker cp ./addons/. ${EC2_IP}:${REMOTE_DIR}/
-
-                        echo "--- 3. Corrigiendo permisos post-copia ---"
                         docker exec -u root ${EC2_IP} chown -R odoo:odoo ${REMOTE_DIR}
 
-                        echo "--- 4. Reiniciando Odoo ---"
+                        echo "--- 3. Reiniciando Odoo ---"
                         docker restart ${EC2_IP}
-                        sleep 5
                     """
                 }
             }

@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización modo local v1',
+    'name': 'Módulo de Prueba Automatización modo local v2',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
