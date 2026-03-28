@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización modo test unit exitoso',
+    'name': 'Módulo de Prueba Automatización Test 1 CD/CI',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
