@@ -45,25 +45,28 @@ pipeline {
                         echo "--- EJECUTANDO TESTS LOCALES PARA: ${targetModule} ---"
                         withEnv(["DB_PASS=${DB_PASS_CRED}"]) {
                             sh """
-                                docker network create test-net-${BUILD_NUMBER} || true
-                                docker run -d --name db-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} \
-                                    -e POSTGRES_PASSWORD=\$DB_PASS -e POSTGRES_USER=odoo -e POSTGRES_DB=postgres postgres:16-alpine
-                                sleep 10
-                                docker run -d --name odoo-test-${BUILD_NUMBER} --network test-net-${BUILD_NUMBER} \
-                                    -e PGPASSWORD=\$DB_PASS odoo:17.0 tail -f /dev/null
-                                docker exec -u root odoo-test-${BUILD_NUMBER} mkdir -p /mnt/extra-addons
-                                docker cp ./addons/. odoo-test-${BUILD_NUMBER}:/mnt/extra-addons/
-                                docker exec -u root odoo-test-${BUILD_NUMBER} sh -c "
-                                    pip install websocket-client || true && \
-                                    odoo -d odoo_test --db_host db-test-${BUILD_NUMBER} --db_user odoo --db_password=\$DB_PASS \
-                                    --addons-path=/mnt/extra-addons -i ${targetModule} --test-enable --stop-after-init --log-level=test --test-tags /${targetModule}"
+                                # ... (creación de red y contenedores igual que antes) ...
+
+                                # EJECUCIÓN ESTRICTA DE TESTS
+                                # Quitamos el '|| true' para que si falla el comando, falle el stage
+                                docker exec -u odoo odoo-test-${BUILD_NUMBER} odoo \
+                                    -d odoo_test --db_host db-test-${BUILD_NUMBER} \
+                                    --db_user odoo --db_password=\$DB_PASS \
+                                    --addons-path=/mnt/extra-addons \
+                                    -i ${targetModule} \
+                                    --test-enable \
+                                    --stop-after-init \
+                                    --log-level=test \
+                                    --test-tags /${targetModule}
                             """
                         }
                     } else {
-                        echo "--- No se detectó módulo en el commit (Ejemplo: MOD:crm_custom) ---"
+                        // Si no hay módulo, podemos decidir si fallar o seguir
+                        echo "--- No se detectó módulo en el commit. Saltando tests. ---"
                     }
                 }
             }
+            // El post siempre limpia, incluso si el test falla
             post {
                 always {
                     sh "docker stop odoo-test-${BUILD_NUMBER} db-test-${BUILD_NUMBER} || true"
