@@ -79,17 +79,18 @@ pipeline {
                     sh """
                         echo "--- 1. Limpiando y Preparando Directorio ---"
                         docker exec -u root ${EC2_IP} sh -c "
-                            rm -rf ${REMOTE_DIR}/*
                             mkdir -p ${REMOTE_DIR}
-                            chown -R odoo:odoo ${REMOTE_DIR}
+                            rm -rf ${REMOTE_DIR}/*
+                            # Aseguramos que TODO /var/lib/odoo sea del usuario odoo
+                            chown -R odoo:odoo /mnt/extra-addons
+                            chown -R odoo:odoo /var/lib/odoo
                         "
 
                         echo "--- 2. Transfiriendo código ---"
-                        # Copiamos el contenido de la carpeta addons al directorio mapeado
                         docker cp ./addons/. ${EC2_IP}:${REMOTE_DIR}/
 
-                        echo "--- 3. Verificando transferencia ---"
-                        docker exec ${EC2_IP} ls -l ${REMOTE_DIR}
+                        echo "--- 3. Corrigiendo permisos post-copia ---"
+                        docker exec -u root ${EC2_IP} chown -R odoo:odoo ${REMOTE_DIR}
 
                         echo "--- 4. Reiniciando Odoo ---"
                         docker restart ${EC2_IP}
