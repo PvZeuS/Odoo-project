@@ -13,9 +13,9 @@ class TestModeloPrueba(TransactionCase):
         })
 
     def test_01_creacion_correcta(self):
-        """Verifica que el registro se guardó con los datos correctos"""
-        self.assertEqual(self.registro_base.name, 'Test Inicial')
-        self.assertEqual(self.registro_base.descripcion, 'Una descripción de prueba')
+        """Este test va a fallar porque la comparación será falsa"""
+        # Cambiamos 'Test Inicial' por algo que NO existe
+        self.assertEqual(self.registro_base.name, 'Este nombre causara error')
 
     def test_02_campo_requerido(self):
         """Verifica que el sistema lance error si falta el nombre (required=True)"""
