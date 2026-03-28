@@ -1,5 +1,5 @@
 {
-    'name': 'Módulo de Prueba Automatización modo local v2',
+    'name': 'Módulo de Prueba Automatización modo local Rollback',
     'version': '1.0',
     'category': 'Extra Tools',
     'summary': 'Módulo simple para verificar la carga',
